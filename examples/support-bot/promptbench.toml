@@ -1,0 +1,34 @@
+# Offline demo configuration: fake judge + lexical similarity, so it runs with no API keys.
+# For real use, switch to:
+#   [promptbench.judge]       provider = "anthropic", model = "claude-opus-5-5"
+#   [promptbench.similarity]  backend = "sentence_transformers"  (needs the [similarity] extra)
+# and re-baseline: scores from different graders are not comparable.
+
+[promptbench]
+goldens_dir   = "goldens"
+baselines_dir = "baselines"
+rubrics_dir   = "rubrics"
+concurrency   = 4
+target_timeout_s = 30
+
+[promptbench.tracking]
+enabled = true
+project = "promptbench-example"
+
+[promptbench.similarity]
+backend = "lexical"
+min     = 0.30
+
+[promptbench.judge]
+provider = "fake"
+samples  = 1
+
+[promptbench.gate]
+mode             = "enforce"
+default_max_drop = 0.05
+min_cases        = 5
+max_error_rate   = 0.10
+
+[promptbench.gate.metrics]
+"judge.correctness" = { max_drop = 0.05, floor = 0.50 }
+"contains"          = { max_drop = 0.0 }

@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# Environments
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# PromptBench run outputs (baselines/ is committed — do not add it here)
+report.md
+junit.xml
+results.json
+.promptbench/
+
+# LangSmith pytest cache
+tests/cassettes/
+
+# Hugging Face / sentence-transformers model cache
+.cache/
+models/
+
+# Claude Code personal settings
+.claude/settings.local.json
+CLAUDE.local.md
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
