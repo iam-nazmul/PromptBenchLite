@@ -45,12 +45,11 @@ packages = ["src/promptbench"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
-pytester_example_dir = "tests"
 
 [tool.ruff]
 line-length = 110
 target-version = "py311"
-extend-exclude = ["examples/*/baselines"]
+extend-exclude = ["examples/*/baselines", "*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
@@ -67,3 +66,10 @@ no_implicit_optional = true
 [[tool.mypy.overrides]]
 module = ["sentence_transformers.*"]
 ignore_missing_imports = true
+
+[tool.coverage.run]
+source = ["src/promptbench"]
+
+[tool.coverage.report]
+skip_covered = true
+show_missing = true
