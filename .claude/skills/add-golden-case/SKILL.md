@@ -31,7 +31,8 @@ Rules:
 - `expected.answer` is a *good* answer, not the only answer. Similarity and the judge compare against it.
 - Put hard requirements in deterministic evaluators (`contains`, `regex`, `json_schema`), not in the judge rubric. They are cheaper and have no noise.
 - Use only synthetic or approved data. No real customer names, emails, IDs, or secrets: inputs are sent to Anthropic and LangSmith.
-- Tag cases so `--tag` filtering and triage work (`safety`, `edge-case`, area names).
+- Tag cases so `--tag` filtering (and `pytest -k <tag>`) and triage work (`safety`, `edge-case`, area names).
+- Use `criteria:` for a requirement that applies to this case only (e.g., "must not invent an answer"). It is shown to the judge alongside the rubric.
 - Prefer cases that discriminate. A case every plausible prompt passes adds cost but no signal.
 
 ## 3. Validate (offline, free)

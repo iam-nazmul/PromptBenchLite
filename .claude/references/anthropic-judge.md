@@ -1,6 +1,8 @@
 # LLM judge on the Anthropic API
 
-Source: Anthropic `claude-api` skill reference (models table cached 2026-10-06), checked 2026-10-19. For anything not shown here, check the Python SDK docs. Don't guess method names.
+Source: Anthropic `claude-api` skill reference (models table cached 2026-10-06) and the installed SDK (`anthropic` 1.15), checked 2026-10-19. For anything not shown here, check the Python SDK docs. Don't guess method names.
+
+Implemented in `src/promptbench/evaluators/judge.py` (`AnthropicJudgeBackend`). Tests: `tests/evaluators/test_judge.py`. anthropic 1.x uses `httpx2`, so build fake exceptions with `httpx2.Request`.
 
 ## Model and parameters
 

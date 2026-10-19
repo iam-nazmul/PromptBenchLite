@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PreToolUse hook: block hand edits to baselines and any access to .env files.
+"""PreToolUse hook: block hand edits to baselines and any access to .env files (except .env.example).
 
 Exit 2 blocks the tool call; stderr is shown to Claude.
 """
@@ -14,6 +14,7 @@ BASELINE_MSG = (
     "after a human approves the quality change (see CLAUDE.md, skill update-baseline)."
 )
 ENV_MSG = "Blocked: .env files hold secrets. Use .env.example for the variable list."
+WRITE_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 
 ENV_IN_COMMAND = re.compile(r"(^|[\s/'\"=<>])\.env(\.(?!example\b)[\w.-]+)?(?=$|[\s'\";|&<>)])")
 BASELINE_WRITE_IN_COMMAND = re.compile(
@@ -55,7 +56,7 @@ def main() -> None:
     path = tool_input.get("file_path") or tool_input.get("notebook_path") or ""
     if is_env_file(path):
         block(ENV_MSG)
-    if is_baseline(path):
+    if tool in WRITE_TOOLS and is_baseline(path):
         block(BASELINE_MSG)
 
 
