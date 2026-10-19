@@ -1,6 +1,6 @@
 # PromptBench Lite — Specification
 
-Status: Draft v0.1 · Last updated: 2026-10-19
+Status: v0.1 implemented (M1–M4) · Last updated: 2026-10-19 · Proposal and rationale: [docs/RFC.md](docs/RFC.md)
 
 ## 1. Summary
 
@@ -68,20 +68,23 @@ goldens/*.yaml ──► loader ──► Case[] ──► runner ──► targ
 ```
 src/promptbench/
   config.py          # load + validate promptbench.toml → Config (pydantic)
+  errors.py          # ConfigError (exit 2), InfraError (exit 3)
+  pipeline.py        # shared plan → run → evaluate → track → gate flow (CLI + pytest plugin)
+  gitinfo.py         # git/CI metadata for experiments and baselines
   golden/            # YAML schema, loader, validation
-  runner/            # resolve target callable, execute cases (concurrency, retries, timeouts)
-  evaluators/        # Evaluator protocol, registry, built-ins: deterministic, similarity, judge
+  runner/            # resolve target callable, execute cases (concurrency, timeouts)
+  evaluators/        # Evaluator base, registry, built-ins: deterministic, similarity, judge
   scoring/           # aggregation, baseline I/O, gate decision
   tracking/          # LangSmith adapter (no-op adapter when tracking is off)
-  reporting/         # terminal, Markdown (GitHub step summary), JUnit XML
+  reporting/         # terminal, Markdown (GitHub step summary), JUnit XML, JSON
   pytest_plugin.py   # entry point `promptbench` in pytest11
   cli.py             # `promptbench` console script (typer)
 tests/               # unit tests (offline); tests/live/ for real-API tests
-goldens/             # example golden sets
-baselines/           # committed baseline scores per suite
-rubrics/             # judge rubric markdown files
-.github/workflows/promptbench.yml
+examples/support-bot/  # offline example project: goldens/, rubrics/, baselines/, promptbench.toml
+.github/workflows/   # ci.yml, promptbench.yml (PR gate), baseline-update.yml, live.yml (nightly)
 ```
+
+A user project has `goldens/`, `rubrics/`, `baselines/` and `promptbench.toml` at its root (paths configurable).
 
 Every package under `src/promptbench/` has its own `README.md` (purpose, public API, invariants, how to test).
 
@@ -110,6 +113,10 @@ cases:
     inputs: {question: "Can I get a refund without a receipt?"}
     expected: {answer: "Yes, with the order number from your account."}
     skip: "Policy under review — PB-42"   # optional; skipped cases are excluded from aggregates
+  - id: out-of-scope
+    inputs: {question: "What's the weather in Paris?"}
+    expected: {answer: "I can't help with that; please contact support."}
+    criteria: "Must not invent an answer."    # optional; shown to the judge for this case only
 ```
 
 Rules:
@@ -142,7 +149,9 @@ class Score:
     def errored_score(cls, key: str, reason: str) -> "Score": ...
 ```
 
-Evaluators are registered with an entry-point group `promptbench.evaluators`, so third-party packages can add their own.
+Built-ins live in `evaluators/registry.py::BUILTINS`. Third-party packages add evaluators through the entry-point group `promptbench.evaluators`. A third-party evaluator can't shadow a built-in name.
+
+Evaluator options come from the golden set. Unknown or invalid options are reported by `promptbench validate` (exit 2). If a target fails, every evaluator for that case records an errored score under each of its keys.
 
 ### 6.1 Deterministic (built-in)
 | Name | Config | Score |
@@ -156,13 +165,19 @@ Evaluators are registered with an entry-point group `promptbench.evaluators`, so
 - Default backend: `sentence-transformers` with model `all-MiniLM-L6-v2`. It runs on CPU and needs no API key. The model is cached in CI with `actions/cache`.
 - Score = cosine similarity between the embeddings of output and expected, clipped to [0, 1].
 - Per-case `min` (default from config) sets `passed`.
-- The backend is pluggable through config (`similarity.backend`). Only `sentence_transformers` ships in v1.
+- The backend is set in config (`similarity.backend`):
+  - `sentence_transformers` is the real backend. It needs the optional `[similarity]` extra, because torch is too heavy to be a core dependency.
+  - `lexical` is word-overlap (Jaccard) similarity. It is offline and dependency-free, and is meant for demos and tests, not for measuring quality.
+- The model is loaded lazily on first use, behind a lock.
 
 ### 6.3 LLM-as-judge
 - Provider: Anthropic Messages API through the official `anthropic` SDK.
 - Default model: `claude-opus-5-5` (config `judge.model`). Effort is set explicitly (`judge.effort`, default `medium`).
 - The rubric is a markdown file in `rubrics/<name>.md`. It defines the criteria and a 1–5 scale with an anchor description for each level.
-- The response is constrained to a pydantic model through structured output (`client.messages.parse(..., output_format=JudgeVerdict)`):
+- Options: `rubric` (required), `samples`, `min_score` (1–5; sets `passed`), `field`. Score key: `judge.<rubric>`.
+- `judge.provider = "fake"` swaps in a deterministic offline grader based on word overlap with the reference. It is for the example project and end-to-end tests only.
+- The Anthropic client is created on the first judge call, so `validate` never needs credentials.
+- The response is constrained to a pydantic model through structured output (`client.beta.messages.parse(..., output_format=JudgeVerdict)`, or `client.messages.parse` when `judge.fallbacks = false`). The score's range is checked client-side, and an out-of-range score produces an errored score:
   ```python
   class JudgeVerdict(BaseModel):
       reasoning: str        # written before the score
@@ -170,7 +185,7 @@ Evaluators are registered with an entry-point group `promptbench.evaluators`, so
   ```
   Normalised value = `(score - 1) / 4`.
 - The rubric and instructions go in a cached system prefix (`cache_control: {"type": "ephemeral"}`). Per-case content goes in the user message, after the cache breakpoint.
-- `judge.samples` (default 1): when > 1, the judge is called N times and the mean is used. This reduces variance. Sampling parameters such as `temperature` are not accepted by current models, so repeated sampling is the only way to reduce variance.
+- `judge.samples` (default 1): when > 1, the judge is called N times and the mean of the successful samples is used. This reduces variance. Sampling parameters such as `temperature` are not accepted by current models, so repeated sampling is the only way to reduce variance. The score is errored only if every sample fails. Partial failures are listed in `metadata.failures`.
 - Refusals (`stop_reason == "refusal"`) and API errors after retries produce an **errored** score, not a 0 (see §8.4).
 - Server-side refusal fallbacks are enabled (`fallbacks: "default"`, beta `server-side-fallback-2026-07-01`). The model that served each verdict is recorded in the score metadata, because a fallback changes the grader.
 - The judge never sees the baseline score or previous outputs.
@@ -188,21 +203,26 @@ concurrency   = 4
 target_timeout_s = 60
 
 [promptbench.tracking]
-enabled = true                 # overridden by PROMPTBENCH_TRACKING=off
-project = "promptbench"        # LangSmith dataset/experiment prefix
+enabled  = true                # overridden by PROMPTBENCH_TRACKING=off or --no-tracking
+project  = "promptbench"       # LangSmith dataset/experiment prefix
+required = false               # true: missing key or tracking failure → exit 3
 
 [promptbench.similarity]
-backend = "sentence_transformers"
+backend = "sentence_transformers"   # or "lexical"
 model   = "all-MiniLM-L6-v2"
 min     = 0.75
 
 [promptbench.judge]
-model   = "claude-opus-5-5"
-effort  = "medium"
-samples = 1
+provider    = "anthropic"      # or "fake"
+model       = "claude-opus-5-5"
+effort      = "medium"         # low | medium | high | xhigh | max
+samples     = 1
 max_retries = 3
+max_tokens  = 4000
+fallbacks   = true             # server-side refusal fallbacks
 
 [promptbench.gate]
+mode             = "enforce"   # "warn": report regressions but exit 0 (never masks exit 3)
 default_max_drop = 0.05        # absolute drop in suite mean (0–1 scale) allowed per metric
 min_cases        = 5           # suites with fewer scored cases warn instead of failing
 max_error_rate   = 0.10        # fail (exit 3) if more than 10% of evaluations errored
@@ -249,18 +269,22 @@ For each suite and each score key: `mean` over non-skipped, non-errored cases. A
 ```
 
 ### 8.3 Gate decision
+The delta is computed only over case ids that have a non-errored score in both the baseline and the current run: `delta = mean(current[common]) − mean(baseline.cases[common])`. Comparisons use a tolerance of 1e-6, because baselines store 6 decimals.
+
 A metric **fails** when either holds:
-- `baseline.mean - current.mean > max_drop`
-- `current.mean < floor` (if a floor is set)
+- `−delta > max_drop`
+- `current.mean < floor` (if a floor is set; checked on the full current mean)
 
 A suite fails if any gated metric fails. The run fails if any suite fails.
 
 Special cases:
+- No baseline file for the suite: every metric is `new`, with a warning. Nothing fails.
 - New metric (not in baseline): reported, not gated.
-- Metric in baseline but missing now: fail (evaluator was removed or broken).
-- New cases: included in the current mean. Removed cases: excluded from the baseline mean before comparing. Only the intersection of case ids is compared; the report lists added/removed ids.
+- Metric in baseline but missing now, or all its scores errored: fail (the evaluator was removed or is broken).
+- New cases count toward the reported current mean and the floor, but not toward the delta. Removed and skipped cases are left out of the comparison. The report lists added and removed ids (skipped cases are not listed as removed).
+- No case ids in common: warn.
 - `judge_model` differs from the baseline's: warn loudly. Scores from different graders are not directly comparable.
-- `n < min_cases`: warn, don't fail.
+- Fewer than `min_cases` comparable cases: a would-be failure becomes a warning.
 
 ### 8.4 Errors
 - Target raised or timed out → case errored for all evaluators.
@@ -277,29 +301,32 @@ Special cases:
 
 ## 9. LangSmith integration
 
-- Each suite maps to a LangSmith dataset `<project>/<suite>`. It is synced from YAML on each run: examples are upserted by case `id` (stored in example metadata). The YAML is the source of truth, and examples deleted from YAML are archived.
-- Each run creates one experiment per suite via `Client.evaluate(target, data=dataset, evaluators=[...], experiment_prefix=<suite>, metadata={...})`.
+- Each suite maps to a LangSmith dataset `<project>.<suite>`. It is synced from YAML on each run: examples are upserted by case `id` (stored in example metadata). The YAML is the source of truth. Examples whose case was deleted or is now skipped are removed.
+- Each run creates one experiment per suite via `Client.evaluate(replay_target, data=<synced examples>, evaluators=[replay_scores], experiment_prefix=<suite>, metadata={...})`. PromptBench has already run the target and the evaluators. The replay target returns the recorded outputs, and the replay evaluator returns the recorded scores, so LangSmith never re-runs anything and never affects the gate.
 - Experiment metadata: `git_sha`, `git_branch`, `pr_number`, `ci_run_url`, `promptbench_version`, `judge_model`.
-- Each `Score` becomes a feedback entry with `key=Score.key`, `score=value`, `comment=comment`.
-- The pytest plugin uses `@pytest.mark.langsmith` / `langsmith.testing` (`log_inputs`, `log_outputs`, `log_reference_outputs`, `log_feedback`) so pytest runs appear as LangSmith test-suite experiments.
+- Each non-errored `Score` becomes a feedback entry with `key=Score.key`, `score=value`, `comment=comment`. Errored scores are summarised in one `errored` feedback entry (the count, with reasons in the comment), never sent as 0.
+- The pytest plugin records suites through the same tracker at session end, so CLI and pytest runs look identical in LangSmith.
+- Tracking failures are warnings unless `tracking.required = true`, in which case they exit 3.
 - When tracking is off, the no-op adapter keeps the same code path and writes results only to the local report. The gate behaves the same.
 
 ## 10. CLI
 
 ```
-promptbench validate [--suite NAME]...         # schema-check goldens, rubrics, config; no network
-promptbench run [--suite NAME]... [--tag T]... # run + gate
+promptbench validate [--root DIR] [--suite NAME]...   # goldens, evaluator options, rubrics, target import; no network
+promptbench run [--root DIR] [--suite NAME]... [--tag T]...   # run + gate
      [--no-tracking] [--report-md PATH] [--junit PATH] [--json PATH]
-     [--update-baseline]                        # only allowed with --i-know-what-im-doing on non-main branches
-promptbench baseline update [--suite NAME]... [--from-experiment NAME]
-promptbench baseline show [--suite NAME]
-promptbench compare EXPERIMENT_A EXPERIMENT_B  # per-case delta table from LangSmith
+     [--update-baseline [--i-know-what-im-doing]]  # off main/master needs the flag; not with --tag
+promptbench baseline update [--root DIR] (--from-results PATH [--suite NAME]... | --from-experiment NAME --suite NAME)
+promptbench baseline show [--root DIR] [--suite NAME]...
+promptbench compare EXPERIMENT_A EXPERIMENT_B [--limit N]   # per-case delta table from LangSmith
 ```
+
+`--from-results` writes the `baseline_candidate` recorded in a results file, and refuses suites whose run was an infrastructure failure. When `GITHUB_STEP_SUMMARY` is set, `run` appends the Markdown report to it.
 
 ## 11. pytest plugin
 
-- Enabled with `pytest --promptbench` (or `promptbench = true` in `[tool.pytest.ini_options]`).
-- Collects one test item per golden case: `goldens/support-bot.yaml::refund-window`.
+- Enabled with `pytest --promptbench goldens/` (or `promptbench = true` in `[tool.pytest.ini_options]`). Options: `--promptbench-root`, `--promptbench-suite NAME` (repeatable), `--promptbench-no-tracking`.
+- Collects one test item per golden case: `goldens/support-bot.yaml::refund-window`. Case tags are added as keywords, so `-k billing` selects by tag. Skipped cases become skipped tests.
 - A case item fails if any score with a defined `passed` is `False`. Per-case thresholds are separate from the regression gate.
 - In `pytest_sessionfinish`, the suite-level gate runs and sets `session.exitstatus` to the exit codes in §8.5.
 - Markers: `promptbench_suite(name)`, `live` (real API; skipped unless `PROMPTBENCH_LIVE=1`).
@@ -312,6 +339,8 @@ promptbench compare EXPERIMENT_A EXPERIMENT_B  # per-case delta table from LangS
 - JSON (`--json`) is the machine-readable full result. The `baseline update` command reads this format.
 
 ## 13. GitHub Actions
+
+Workflows: `ci.yml` (lint, types and tests on Python 3.11/3.13, plus an end-to-end run of the example, which must exit 0 unchanged and 1 when degraded), `promptbench.yml` (PR gate), `baseline-update.yml`, and `live.yml` (nightly real-API tests).
 
 `.github/workflows/promptbench.yml`:
 - Triggers: `pull_request` (paths: `prompts/**`, `goldens/**`, `rubrics/**`, `src/**`, `promptbench.toml`) and `workflow_dispatch`.
