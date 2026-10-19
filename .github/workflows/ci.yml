@@ -1,0 +1,58 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy
+      - run: uv run coverage run -m pytest
+      - run: uv run coverage report --fail-under=90
+
+  example-e2e:
+    # The example uses the fake judge + lexical similarity, so this needs no secrets.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PROMPTBENCH_TRACKING: "off"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      - run: uv run promptbench validate --root examples/support-bot
+      - name: Unchanged example passes the gate
+        run: uv run promptbench run --root examples/support-bot
+      - name: Degraded example fails the gate with exit 1
+        env:
+          SUPPORT_BOT_VARIANT: degraded
+        run: |
+          set +e
+          uv run promptbench run --root examples/support-bot
+          code=$?
+          test "$code" -eq 1 || { echo "expected exit 1, got $code"; exit 1; }

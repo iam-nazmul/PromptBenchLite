@@ -42,13 +42,16 @@ Invariants (SPEC §6):
 - No network in `__init__`. Lazy-load clients and models on first `evaluate`.
 - Thread-safe: the runner calls `evaluate` concurrently.
 
+If the evaluator needs config or shared resources (API clients, models, files), override `from_config(cls, options, ctx)` and take them from `ctx: EvalContext`. `judge.py` and `similarity.py` show the pattern. Cache shared objects in `ctx.cache`, and make clients lazy.
+
 ## 2. Register
 
-Add to `[project.entry-points."promptbench.evaluators"]` in `pyproject.toml`:
-
-```toml
-length = "promptbench.evaluators.length:LengthEvaluator"
-```
+- **Built-in** (this repo): add the class to `BUILTINS` in `src/promptbench/evaluators/registry.py`.
+- **Third-party package**: expose it through the entry-point group. A third-party evaluator can't shadow a built-in name.
+  ```toml
+  [project.entry-points."promptbench.evaluators"]
+  length = "my_pkg.evaluators:LengthEvaluator"
+  ```
 
 ## 3. Test (offline)
 

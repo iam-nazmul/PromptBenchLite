@@ -1,0 +1,66 @@
+# Accept a new quality level. Runs only on main, waits for approval on the `baseline-approval`
+# environment (configure required reviewers in repo settings), and opens a PR with baseline files only.
+name: baseline-update
+
+on:
+  workflow_dispatch:
+    inputs:
+      suites:
+        description: "Comma-separated suites (empty = all)"
+        required: false
+      reason:
+        description: "Why the new quality level is acceptable"
+        required: true
+      root:
+        description: "Directory containing promptbench.toml"
+        required: false
+        default: "examples/support-bot"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: baseline-approval
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+
+      - name: Run suites and write baselines
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          SUITES: ${{ inputs.suites }}
+          PB_ROOT: ${{ inputs.root }}
+        run: |
+          args=()
+          for s in ${SUITES//,/ }; do args+=(--suite "$s"); done
+          set +e
+          uv run promptbench run --root "$PB_ROOT" "${args[@]}" --json results.json
+          code=$?
+          set -e
+          # 0 = unchanged, 1 = the drop being accepted; 2/3 must abort.
+          if [ "$code" -gt 1 ]; then exit "$code"; fi
+          uv run promptbench baseline update --root "$PB_ROOT" "${args[@]}" --from-results results.json
+
+      - name: Open PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REASON: ${{ inputs.reason }}
+        run: |
+          if git diff --quiet; then echo "Baselines unchanged."; exit 0; fi
+          branch="baseline-update/${{ github.run_id }}"
+          git switch -c "$branch"
+          git add -- '*baselines/*.json'
+          git -c user.name="promptbench-bot" -c user.email="promptbench-bot@users.noreply.github.com" \
+              commit -m "Update baselines: $REASON"
+          git push -u origin "$branch"
+          gh pr create --title "Update baselines" \
+            --body "$REASON"$'\n\n'"Triggered by @${{ github.actor }} in run ${{ github.run_id }}."

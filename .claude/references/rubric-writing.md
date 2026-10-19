@@ -1,6 +1,6 @@
 # Writing judge rubrics
 
-Rubrics live in `rubrics/<name>.md` and are referenced from golden sets as `judge: {rubric: <name>}`. The rubric text goes into the cached system prompt (see `anthropic-judge.md`).
+Rubrics live in `rubrics/<name>.md` and are referenced from golden sets as `judge: {rubric: <name>}`. The rubric text is inserted into `JUDGE_INSTRUCTIONS` in `src/promptbench/evaluators/judge.py`, which becomes the cached system prompt (see `anthropic-judge.md`). The per-case user message contains `<inputs>`, `<reference>`, the optional `<criteria>`, and `<answer>`. Refer to those names in the rubric. A worked example is in `examples/support-bot/rubrics/correctness.md`.
 
 **Any edit to a rubric, even whitespace, changes the grader.** Scores before and after are not comparable, so a rubric change needs a baseline update (skill `update-baseline`) and a review by the `eval-reviewer` agent.
 
@@ -10,12 +10,13 @@ Rubrics live in `rubrics/<name>.md` and are referenced from golden sets as `judg
 # Correctness
 
 ## What you are judging
-Whether the answer is factually correct and complete with respect to the reference answer
-for the user's question. Ignore tone, length and formatting — other checks cover those.
+Whether the ANSWER is factually correct and complete with respect to the REFERENCE
+for the user's request in INPUTS. Ignore tone, length and formatting — other checks cover those.
 
 ## Inputs you will receive
-- QUESTION: the user's input
+- INPUTS: what the user sent (the case's `inputs`, as JSON)
 - REFERENCE: a correct answer written by a human (one good answer, not the only one)
+- CRITERIA (optional): extra requirements for this specific case
 - ANSWER: the response to judge
 
 ## Scale
