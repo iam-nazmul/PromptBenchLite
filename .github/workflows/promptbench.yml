@@ -1,0 +1,89 @@
+# The PR quality gate. In your own repo, set PB_ROOT to "." (the directory with promptbench.toml)
+# and adjust the path filters to where your prompts live.
+name: promptbench
+
+on:
+  pull_request:
+    paths:
+      - "prompts/**"
+      - "goldens/**"
+      - "rubrics/**"
+      - "src/**"
+      - "examples/**"
+      - "promptbench.toml"
+      - "uv.lock"
+  workflow_dispatch:
+
+concurrency:
+  group: promptbench-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  PB_ROOT: examples/support-bot
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SENTENCE_TRANSFORMERS_HOME: ${{ github.workspace }}/.cache/st
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          enable-cache: true
+      - uses: actions/cache@v4
+        with:
+          path: .cache/st
+          key: st-all-MiniLM-L6-v2
+      - run: uv sync --frozen
+      - run: uv run promptbench validate --root "$PB_ROOT"
+
+      - name: Detect secrets
+        id: secrets
+        run: echo "has_keys=${{ secrets.ANTHROPIC_API_KEY != '' }}" >> "$GITHUB_OUTPUT"
+
+      # The bundled example uses the fake judge, so it also runs on fork PRs without secrets.
+      - name: Run gate
+        if: steps.secrets.outputs.has_keys == 'true' || env.PB_ROOT == 'examples/support-bot'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          CI_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: >
+          uv run promptbench run --root "$PB_ROOT"
+          --report-md report.md --junit junit.xml --json results.json
+
+      - name: Fork PR notice
+        if: steps.secrets.outputs.has_keys != 'true' && env.PB_ROOT != 'examples/support-bot'
+        run: echo "Secrets unavailable (fork PR) — ran \`validate\` only." >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: promptbench-report
+          path: |
+            report.md
+            junit.xml
+            results.json
+          if-no-files-found: ignore
+
+      - name: Comment on PR
+        if: >
+          always() && github.event_name == 'pull_request' && hashFiles('report.md') != '' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          id=$(gh api "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments" \
+               --jq '.[] | select(.body | startswith("<!-- promptbench-report -->")) | .id' | head -1)
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$id" -F body=@report.md
+          else
+            gh pr comment ${{ github.event.pull_request.number }} --body-file report.md
+          fi
